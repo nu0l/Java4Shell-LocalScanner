@@ -35,6 +35,25 @@ go build -o java4shell.exe java4shell.go
 
 运行 `scripts/build.sh` 可交叉构建 Linux、Windows、macOS 的 amd64 和 arm64 版本，产物位于 `dist/`。Linux 支持核对进程实际映射的 HotSpot 库及容器线索。Windows 和 macOS 支持安装清点及 Java 进程发现，运行态库身份标为未核实。
 
+## 输出示例
+
+默认输出为简短结论。发现风险时按 `受影响`、`待确认`、`无法判断` 列出待处理项：
+
+```
+Java4Shell · CVE-2026-114938
+已检查 5 项 · 受影响 1 · 待确认 1 · 已缓解 1 · 不受影响 1 · 无法判断 1
+  受影响  debian-cpu-eligible · Java 21.0.13+9-1~deb13u2
+  待确认  vendor-confirmation-pending · Java 21.0.13.1+2
+  无法判断  metadata-missing
+```
+
+未发现问题时：
+
+```
+Java4Shell · CVE-2026-114938
+已检查 1 项，均不受此漏洞影响。
+```
+
 ## 风险状态
 
 | 报告值 | 含义 |
@@ -50,4 +69,3 @@ go build -o java4shell.exe java4shell.go
 - [使用说明](docs/usage.md)
 - [检测规则、公告及补丁分析](docs/research.md)
 - [隔离测试与验证步骤](docs/testing.md)
-- [项目进度](STATUS.md)

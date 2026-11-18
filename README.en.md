@@ -35,6 +35,25 @@ go build -o java4shell.exe java4shell.go
 
 Run `scripts/build.sh` to build amd64 and arm64 binaries for Linux, Windows and macOS in `dist/`. Linux can verify the mapped HotSpot library and report container hints. Windows and macOS inventory installations and discover Java processes, with their loaded library identity reported as unverified.
 
+## Output examples
+
+The default report is a short Chinese verdict. When there are findings, items are listed under `受影响` (affected), `待确认` (potential) and `无法判断` (unknown):
+
+```
+Java4Shell · CVE-2026-114938
+已检查 5 项 · 受影响 1 · 待确认 1 · 已缓解 1 · 不受影响 1 · 无法判断 1
+  受影响  debian-cpu-eligible · Java 21.0.13+9-1~deb13u2
+  待确认  vendor-confirmation-pending · Java 21.0.13.1+2
+  无法判断  metadata-missing
+```
+
+When nothing is affected:
+
+```
+Java4Shell · CVE-2026-114938
+已检查 1 项，均不受此漏洞影响。
+```
+
 | Status | Meaning |
 |---|---|
 | `affected` | Known affected build on an eligible CPU, with no matching mitigation flag in the collected evidence. |
@@ -48,4 +67,3 @@ The labels describe the evidence and execution context. Application exposure and
 - [Usage](docs/usage.en.md)
 - [Advisories, version rules and patch analysis](docs/research.md)
 - [Isolated testing and remediation verification](docs/testing.en.md)
-- [Project status](STATUS.md)
