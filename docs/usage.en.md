@@ -21,8 +21,8 @@
 ## Inventory
 
 ```bash
-./java4shell inventory testdata/assets.json --format json
-./java4shell inventory testdata/assets.csv --out assessment.csv
+./java4shell inventory assets.json --format json
+./java4shell inventory assets.csv --out assessment.csv
 ```
 
 Use a JSON array of objects or a CSV with the same field names in the header. Each entry needs a unique `id`. Input files can be up to 16 MiB.

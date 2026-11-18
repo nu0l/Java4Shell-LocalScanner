@@ -21,8 +21,8 @@
 ## 离线清单
 
 ```bash
-./java4shell inventory testdata/assets.json --format json
-./java4shell inventory testdata/assets.csv --out assessment.csv
+./java4shell inventory assets.json --format json
+./java4shell inventory assets.csv --out assessment.csv
 ```
 
 JSON 使用对象数组，CSV 使用相同名称的表头。每条记录必须有唯一的 `id`。文件上限为 16 MiB。

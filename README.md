@@ -25,7 +25,7 @@
 go build -o java4shell java4shell.go
 ./java4shell
 ./java4shell local --processes-only --pid 1234 --out running.json
-./java4shell inventory testdata/assets.json --out report.csv
+./java4shell inventory assets.json --out report.csv
 ```
 
 ```powershell

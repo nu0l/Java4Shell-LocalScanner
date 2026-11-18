@@ -1,4 +1,5 @@
 /dist/
+/testdata/
 /java4shell
 /java4shell.exe
 .DS_Store
