@@ -1,0 +1,33 @@
+[
+  {
+    "id": "debian-cpu-eligible",
+    "version": "21.0.13+9-1~deb13u2",
+    "vendor": "Debian",
+    "arch": "amd64",
+    "cpu_features": ["avx512f", "avx512bw", "avx512vbmi", "bmi2"],
+    "cpu_features_complete": true
+  },
+  {
+    "id": "vendor-confirmation-pending",
+    "version": "21.0.13.1+2",
+    "vendor": "Example vendor",
+    "arch": "amd64"
+  },
+  {
+    "id": "verified-flags-example",
+    "version": "21.0.13+9-1~deb13u2",
+    "vendor": "Debian",
+    "arch": "amd64",
+    "cpu": "present",
+    "flags": ["-XX:-UseBASE64Intrinsics"],
+    "flags_effective": true
+  },
+  {
+    "id": "oracle-java-se-updated",
+    "version": "21.0.13.1+4-LTS",
+    "vendor": "Oracle Corporation",
+    "product": "Oracle Java SE",
+    "arch": "amd64"
+  },
+  {"id": "metadata-missing"}
+]
