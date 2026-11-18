@@ -68,4 +68,3 @@ Java4Shell · CVE-2026-114938
 
 - [使用说明](docs/usage.md)
 - [检测规则、公告及补丁分析](docs/research.md)
-- [隔离测试与验证步骤](docs/testing.md)

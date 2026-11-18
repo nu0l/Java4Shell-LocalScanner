@@ -6,3 +6,7 @@
 AGENTS.md
 PLAN.md
 STATUS.md
+java4shell_test.go
+scripts/smoke-container.sh
+docs/testing.md
+docs/testing.en.md

@@ -66,4 +66,3 @@ The labels describe the evidence and execution context. Application exposure and
 
 - [Usage](docs/usage.en.md)
 - [Advisories, version rules and patch analysis](docs/research.md)
-- [Isolated testing and remediation verification](docs/testing.en.md)
