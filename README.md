@@ -6,15 +6,24 @@
 
 ## 快速开始
 
-下载包中的 `dist/` 已提供六个预编译程序。解压后打开终端，在解压目录运行对应平台的程序，直接扫描本机。
+预编译程序见 [Releases](https://github.com/nu0l/Java4Shell-LocalScanner/releases)，含六个平台的二进制与 `SHA256SUMS` 校验和。下载后在解压目录运行对应平台的程序，直接扫描本机。
 
 ```powershell
-.\dist\java4shell-windows-amd64.exe
+curl.exe -fLO https://github.com/nu0l/Java4Shell-LocalScanner/releases/latest/download/java4shell-windows-amd64.exe
+.\java4shell-windows-amd64.exe
 ```
 
 ```bash
-./dist/java4shell-linux-amd64
-./dist/java4shell-darwin-arm64
+curl -fLO https://github.com/nu0l/Java4Shell-LocalScanner/releases/latest/download/java4shell-linux-amd64
+chmod +x java4shell-linux-amd64
+./java4shell-linux-amd64
+```
+
+校验发布包完整性：
+
+```bash
+curl -fLO https://github.com/nu0l/Java4Shell-LocalScanner/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
 ```
 
 默认显示中文结论和待处理项。使用 `--details` 查看完整 TXT 明细。
@@ -65,6 +74,10 @@ Java4Shell · CVE-2026-114938
 | `unknown` | 缺少构建身份或版本证据，无法分类。 |
 
 这些状态描述已采集证据和运行环境。应用的网络可达性与可利用性需单独评估。
+
+## 判定范围
+
+挂载 JDK 的 CPU 上下文默认待确认。Linux 能识别启动参数与 JVM 环境变量中的缓解开关，确认生效需要独立证据。Windows 和 macOS 的运行中 JVM 库身份仍未核实。`--fail-on affected,potential` 可让流水线在报告生成后用退出码 3 处理命中项。
 
 - [使用说明](docs/usage.md)
 - [检测规则、公告及补丁分析](docs/research.md)

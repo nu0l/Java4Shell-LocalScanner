@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +30,10 @@ import (
 
 const cve = "CVE-2026-114938"
 const rulesAsOf = "2026-11-18"
+const schemaVersion = 1
+
+var version = "dev"
+var errPolicyMatch = errors.New("assessment matched the exit policy")
 
 type reportSummary struct {
 	Total    int            `json:"total"`
@@ -38,12 +43,13 @@ type reportSummary struct {
 var statusOrder = []string{affected, potential, mitigated, unaffected, unknown}
 
 type report struct {
-	CVE       string        `json:"cve"`
-	RulesAsOf string        `json:"rules_as_of"`
-	Mode      string        `json:"mode"`
-	Summary   reportSummary `json:"summary"`
-	Warnings  []string      `json:"warnings,omitempty"`
-	Findings  []finding     `json:"findings"`
+	SchemaVersion int           `json:"schema_version"`
+	CVE           string        `json:"cve"`
+	RulesAsOf     string        `json:"rules_as_of"`
+	Mode          string        `json:"mode"`
+	Summary       reportSummary `json:"summary"`
+	Warnings      []string      `json:"warnings,omitempty"`
+	Findings      []finding     `json:"findings"`
 }
 
 type paths []string
@@ -75,10 +81,26 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  java4shell --details              Show full assessment evidence")
 	fmt.Fprintln(w, "  java4shell local --processes-only --pid PID")
 	fmt.Fprintln(w, "  java4shell inventory FILE.json --out report.csv")
-	fmt.Fprintln(w, "Use java4shell <command> --help for options. Assessment results use exit code 0.")
+	fmt.Fprintln(w, "  java4shell --version")
+	fmt.Fprintln(w, "Use java4shell <command> --help for options. --fail-on or --strict can return exit code 3.")
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 1 && args[0] == "--version" {
+		revision, commitTime := "unknown", "unknown"
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, setting := range info.Settings {
+				switch setting.Key {
+				case "vcs.revision":
+					revision = setting.Value
+				case "vcs.time":
+					commitTime = setting.Value
+				}
+			}
+		}
+		_, err := fmt.Fprintf(stdout, "Java4Shell-LocalScanner %s (commit %s, commit time %s, rules %s)\n", version, revision, commitTime, rulesAsOf)
+		return err
+	}
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		usage(stdout)
 		return nil
@@ -98,7 +120,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	var input, positionalInput string
 	var roots paths
 	var pids pidList
-	var noProcesses, processesOnly bool
+	var noProcesses, processesOnly, hostJDK bool
+	failOn := fs.String("fail-on", "", "comma-separated finding statuses that return exit code 3")
+	strict := fs.Bool("strict", false, "return exit code 3 when a finding is unknown")
 	if mode == "inventory" {
 		fs.StringVar(&input, "input", "", "input JSON array or CSV with headers; optionally supply as a positional file")
 		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -109,6 +133,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fs.Var(&pids, "pid", "process ID, repeatable; otherwise inspect visible processes")
 		fs.BoolVar(&noProcesses, "no-processes", false, "skip process discovery")
 		fs.BoolVar(&processesOnly, "processes-only", false, "skip installation discovery")
+		fs.BoolVar(&hostJDK, "host-jdk", false, "explicit JDK paths run on the scanner host")
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -150,7 +175,21 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if processesOnly && (noProcesses || len(roots) > 0) {
 		return errors.New("--processes-only cannot be combined with --no-processes or --jdk")
 	}
-	result := report{CVE: cve, RulesAsOf: rulesAsOf, Mode: mode, Findings: []finding{}}
+	if hostJDK && len(roots) == 0 {
+		return errors.New("--host-jdk requires at least one --jdk path")
+	}
+	exitStatuses := make(map[string]bool)
+	if *failOn != "" {
+		for _, status := range strings.Split(*failOn, ",") {
+			status = strings.TrimSpace(status)
+			if !slices.Contains(statusOrder, status) {
+				return fmt.Errorf("invalid --fail-on status %q", status)
+			}
+			exitStatuses[status] = true
+		}
+	}
+	exitStatuses[unknown] = exitStatuses[unknown] || *strict
+	result := report{SchemaVersion: schemaVersion, CVE: cve, RulesAsOf: rulesAsOf, Mode: mode, Findings: []finding{}}
 	var assets []asset
 	if mode == "inventory" {
 		if input == "" {
@@ -165,7 +204,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 		cpu := localCPU()
 		if !processesOnly {
 			for _, root := range jdkRoots(roots) {
-				assets = append(assets, releaseAsset(root, root, "installation", cpu))
+				a := releaseAsset(root, root, "installation", cpu)
+				a.CPUContext = "host"
+				if len(roots) != 0 && !hostJDK {
+					a.CPUContext = unknown
+				}
+				assets = append(assets, a)
 			}
 		}
 		if !noProcesses {
@@ -181,16 +225,24 @@ func run(args []string, stdout, stderr io.Writer) error {
 		result.Findings = append(result.Findings, classify(a))
 	}
 	if *out == "" {
-		return writeReport(stdout, *format, result, *details)
+		if err := writeReport(stdout, *format, result, *details); err != nil {
+			return err
+		}
+	} else {
+		f, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return err
+		}
+		if err := errors.Join(writeReport(f, *format, result, *details), f.Close()); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "Report saved to %q\n", *out)
 	}
-	f, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
+	for _, f := range result.Findings {
+		if exitStatuses[f.Status] {
+			return errPolicyMatch
+		}
 	}
-	if err := errors.Join(writeReport(f, *format, result, *details), f.Close()); err != nil {
-		return err
-	}
-	fmt.Fprintf(stderr, "Report saved to %q\n", *out)
 	return nil
 }
 
@@ -205,7 +257,19 @@ func readInventory(path string) ([]asset, error) {
 	case ".json":
 		d := json.NewDecoder(strings.NewReader(content))
 		d.DisallowUnknownFields()
-		if err := d.Decode(&assets); err != nil {
+		if strings.HasPrefix(strings.TrimSpace(content), "{") {
+			var input struct {
+				SchemaVersion int     `json:"schema_version"`
+				Assets        []asset `json:"assets"`
+			}
+			if err := d.Decode(&input); err != nil {
+				return nil, fmt.Errorf("inventory JSON: %w", err)
+			}
+			if input.SchemaVersion != schemaVersion {
+				return nil, fmt.Errorf("unsupported inventory schema_version %d", input.SchemaVersion)
+			}
+			assets = input.Assets
+		} else if err := d.Decode(&assets); err != nil {
 			return nil, fmt.Errorf("inventory JSON: %w", err)
 		}
 		if assets == nil {
@@ -245,6 +309,21 @@ func readInventory(path string) ([]asset, error) {
 				return nil, fmt.Errorf("inventory record %d must supply either cpu or a complete feature list", i+1)
 			}
 		}
+		switch a.CPUContext {
+		case "":
+			a.CPUContext = unknown
+			if a.CPU != "" && a.CPU != unknown || len(a.CPUFeatures) != 0 {
+				a.CPUContext = "declared"
+			}
+		case "declared", unknown:
+		default:
+			return nil, fmt.Errorf("inventory record %d needs cpu_context=declared|unknown", i+1)
+		}
+		if len(a.Flags) != 0 {
+			a.FlagSources = []string{"inventory"}
+		} else {
+			a.FlagSources = nil
+		}
 		if a.Kind == "" {
 			a.Kind = "inventory"
 		}
@@ -258,7 +337,7 @@ func readInventoryCSV(content string) ([]asset, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inventory CSV header: %w", err)
 	}
-	allowed := strings.Fields("id kind version java_home vendor product vm arch cpu cpu_features cpu_features_complete patch patch_ref flags flags_effective container notes")
+	allowed := strings.Fields("id kind version java_home vendor product vm arch cpu cpu_features cpu_features_complete patch patch_ref flags flags_effective container notes cpu_context patch_attested schema_version")
 	columns := make(map[string]int)
 	for i, h := range header {
 		h = strings.TrimSpace(h)
@@ -285,8 +364,12 @@ func readInventoryCSV(content string) ([]asset, error) {
 			}
 			return ""
 		}
+		if _, hasSchema := columns["schema_version"]; hasSchema && get("schema_version") != strconv.Itoa(schemaVersion) {
+			return nil, fmt.Errorf("CSV record %d has an unsupported schema_version", row)
+		}
 		a := asset{
-			ID: get("id"), Kind: get("kind"), Version: get("version"), JavaHome: get("java_home"), Vendor: get("vendor"),
+			CPUContext: get("cpu_context"),
+			ID:         get("id"), Kind: get("kind"), Version: get("version"), JavaHome: get("java_home"), Vendor: get("vendor"),
 			Product: get("product"), VM: get("vm"), Arch: get("arch"), CPU: get("cpu"),
 			Patch: get("patch"), PatchRef: get("patch_ref"), Container: get("container"),
 			Flags: strings.Fields(get("flags")), CPUFeatures: strings.Fields(get("cpu_features")),
@@ -294,7 +377,7 @@ func readInventoryCSV(content string) ([]asset, error) {
 		if note := get("notes"); note != "" {
 			a.Notes = []string{note}
 		}
-		for _, name := range []string{"flags_effective", "cpu_features_complete"} {
+		for _, name := range []string{"flags_effective", "cpu_features_complete", "patch_attested"} {
 			value := get(name)
 			if value != "" && value != "true" && value != "false" {
 				return nil, fmt.Errorf("CSV record %d column %s expects true or false", row, name)
@@ -341,9 +424,9 @@ func writeReport(w io.Writer, format string, r report, details bool) error {
 		}
 	}
 	for _, f := range r.Findings {
-		if _, err := fmt.Fprintf(w, "%s %q (%s) version=%q java_home=%q vendor=%q product=%q arch=%q build=%s cpu=%s container=%q flags=%q effective=%t\n  %q\n",
+		if _, err := fmt.Fprintf(w, "%s %q (%s) version=%q java_home=%q vendor=%q product=%q arch=%q build=%s cpu=%s container=%q flags=%q effective=%t cpu_context=%s flag_sources=%q reason_code=%s\n  %q\n",
 			f.Status, f.ID, strconv.QuoteToASCII(f.Kind), f.Version, f.JavaHome, f.Vendor, f.Product, f.Arch, f.BuildAssessment,
-			f.CPUAssessment, f.Container, strings.Join(f.Flags, " "), f.FlagsEffective, f.Reason); err != nil {
+			f.CPUAssessment, f.Container, strings.Join(f.Flags, " "), f.FlagsEffective, f.CPUContext, strings.Join(f.FlagSources, " "), f.ReasonCode, f.Reason); err != nil {
 			return err
 		}
 		for _, note := range f.Notes {
@@ -383,7 +466,11 @@ func writeBriefReport(w io.Writer, r report) error {
 		for _, status := range []string{affected, potential, unknown} {
 			for _, f := range r.Findings {
 				if f.Status == status {
-					fmt.Fprintf(&output, "  %s  %s\n", statusLabels[status], briefAssetName(f))
+					label := statusLabels[status]
+					if f.ReasonCode == "mitigation_observed_unverified" {
+						label = "缓解待验证"
+					}
+					fmt.Fprintf(&output, "  %s  %s\n", label, briefAssetName(f))
 				}
 			}
 		}
@@ -397,7 +484,7 @@ func writeBriefReport(w io.Writer, r report) error {
 
 func allUseCPUWithoutRequiredFeatures(findings []finding) bool {
 	for _, f := range findings {
-		if f.CPU != "absent" || f.CPUAssessment != "absent" {
+		if f.CPU != "absent" || f.CPUAssessment != "absent" || f.CPUContext != "host" {
 			return false
 		}
 	}
@@ -424,20 +511,25 @@ func briefAssetName(f finding) string {
 	}, id)
 }
 
+var csvColumns = strings.Fields("cve rules_as_of mode id kind status reason build_assessment build_evidence cpu_assessment version java_home vendor product vm arch cpu_features cpu_features_complete patch patch_ref flags flags_effective container notes schema_version cpu_context patch_attested flag_sources mitigation_assessment reason_code")
+
 func writeCSV(w io.Writer, r report) error {
 	c := csv.NewWriter(w)
-	if err := c.Write(strings.Fields("cve rules_as_of mode id kind status reason build_assessment build_evidence cpu_assessment version java_home vendor product vm arch cpu_features cpu_features_complete patch patch_ref flags flags_effective container notes")); err != nil {
+	if err := c.Write(csvColumns); err != nil {
 		return err
 	}
 	for _, message := range r.Warnings {
-		if err := c.Write(csvRow([]string{r.CVE, r.RulesAsOf, r.Mode, "", "warning", "", message})); err != nil {
+		row := make([]string, len(csvColumns))
+		copy(row, []string{r.CVE, r.RulesAsOf, r.Mode, "", "warning", "", message})
+		row[slices.Index(csvColumns, "schema_version")] = strconv.Itoa(r.SchemaVersion)
+		if err := c.Write(csvRow(row)); err != nil {
 			return err
 		}
 	}
 	for _, f := range r.Findings {
 		if err := c.Write(csvRow([]string{r.CVE, r.RulesAsOf, r.Mode, f.ID, f.Kind, f.Status, f.Reason, f.BuildAssessment, f.BuildEvidence, f.CPUAssessment,
 			f.Version, f.JavaHome, f.Vendor, f.Product, f.VM, f.Arch, strings.Join(f.CPUFeatures, " "), strconv.FormatBool(f.CPUFeaturesComplete),
-			f.Patch, f.PatchRef, strings.Join(f.Flags, " "), strconv.FormatBool(f.FlagsEffective), f.Container, strings.Join(f.Notes, " | ")})); err != nil {
+			f.Patch, f.PatchRef, strings.Join(f.Flags, " "), strconv.FormatBool(f.FlagsEffective), f.Container, strings.Join(f.Notes, " | "), strconv.Itoa(r.SchemaVersion), f.CPUContext, strconv.FormatBool(f.PatchAttested), strings.Join(f.FlagSources, " "), f.MitigationAssessment, f.ReasonCode})); err != nil {
 			return err
 		}
 	}
@@ -452,11 +544,14 @@ func csvRow(row []string) []string {
 			row[i] = "'" + cell
 		}
 	}
-	return append(row, make([]string, 24-len(row))...)
+	return append(row, make([]string, len(csvColumns)-len(row))...)
 }
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		if errors.Is(err, errPolicyMatch) {
+			os.Exit(3)
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
 	}
@@ -484,23 +579,28 @@ type asset struct {
 	VM                  string   `json:"vm,omitempty"`
 	Arch                string   `json:"arch,omitempty"`
 	CPU                 string   `json:"cpu,omitempty"`
+	CPUContext          string   `json:"cpu_context,omitempty"`
 	CPUFeatures         []string `json:"cpu_features,omitempty"`
 	CPUFeaturesComplete bool     `json:"cpu_features_complete,omitempty"`
 	Patch               string   `json:"patch,omitempty"`
 	PatchRef            string   `json:"patch_ref,omitempty"`
+	PatchAttested       bool     `json:"patch_attested"`
 	Flags               []string `json:"flags,omitempty"`
 	FlagsEffective      bool     `json:"flags_effective,omitempty"`
+	FlagSources         []string `json:"flag_sources,omitempty"`
 	Container           string   `json:"container,omitempty"`
 	Notes               []string `json:"notes,omitempty"`
 }
 
 type finding struct {
 	asset
-	Status          string `json:"status"`
-	Reason          string `json:"reason"`
-	BuildAssessment string `json:"build_assessment"`
-	CPUAssessment   string `json:"cpu_assessment"`
-	BuildEvidence   string `json:"build_evidence"`
+	Status               string `json:"status"`
+	Reason               string `json:"reason"`
+	ReasonCode           string `json:"reason_code"`
+	MitigationAssessment string `json:"mitigation_assessment"`
+	BuildAssessment      string `json:"build_assessment"`
+	CPUAssessment        string `json:"cpu_assessment"`
+	BuildEvidence        string `json:"build_evidence"`
 }
 
 var modernVersion = regexp.MustCompile(`^([0-9]{1,3})(\.[0-9]+){0,4}(\+[0-9]+([.-][A-Za-z0-9.~+_-]+)?)?$`)
@@ -555,9 +655,6 @@ const oracleRef = "https://www.oracle.com/security-alerts/cspunov2026.html#JAVA"
 const debianRef = "https://security-tracker.debian.org/tracker/CVE-2026-114938"
 
 func buildAssessment(a asset) (string, string) {
-	if (a.Patch == "fixed" || a.Patch == "unfixed") && strings.TrimSpace(a.PatchRef) != "" {
-		return a.Patch, a.PatchRef
-	}
 	vm := strings.ToLower(a.VM)
 	if strings.Contains(vm, "openj9") {
 		return "outside_scope", "Identified OpenJ9 VM. The CVE applies to a HotSpot intrinsic."
@@ -688,26 +785,49 @@ func mitigation(flags []string) bool {
 
 func classify(a asset) finding {
 	a.Flags = relevantFlags(a.Flags)
+	if a.CPUContext == "" {
+		a.CPUContext = unknown
+	}
 	build, detail := buildAssessment(a)
 	cpu := cpuAssessment(a)
-	f := finding{asset: a, BuildAssessment: build, CPUAssessment: cpu, BuildEvidence: detail}
+	f := finding{asset: a, BuildAssessment: build, CPUAssessment: cpu, BuildEvidence: detail, MitigationAssessment: "not_observed"}
+	f.PatchAttested = a.Patch == build && (build == "fixed" || build == "unfixed") && strings.TrimSpace(a.PatchRef) == detail
+	if a.Patch != "" && !f.PatchAttested {
+		f.Notes = append(slices.Clone(a.Notes), "Inventory patch claim is not corroborated by a built-in rule for this exact build and advisory.")
+	}
+	if mitigation(a.Flags) {
+		f.MitigationAssessment = "observed_unverified"
+		if a.FlagsEffective {
+			f.MitigationAssessment = "effective_declared"
+		}
+	}
+	arch := archName(a.Arch)
+	trustedAbsence := a.CPUContext == "host" || (arch != "" && arch != "amd64")
 	switch {
 	case build == "fixed" || build == "outside_scope":
-		f.Status, f.Reason = unaffected, detail
+		f.Status, f.ReasonCode, f.Reason = unaffected, "build_"+build, detail
+	case cpu == "absent" && trustedAbsence:
+		f.Status, f.ReasonCode, f.Reason = unaffected, "cpu_features_absent", "The target architecture or verified local CPU lacks required features."
 	case cpu == "absent":
-		f.Status, f.Reason = unaffected, "The examined runtime CPU context lacks a required architecture or CPU feature."
+		f.Status, f.ReasonCode, f.Reason = unknown, "cpu_context_unverified", "CPU absence was not verified for the target execution context."
 	case build == unknown:
-		f.Status, f.Reason = unknown, detail
-	case mitigation(a.Flags) && a.FlagsEffective && archName(a.Arch) == "amd64":
-		f.Status, f.Reason = mitigated, "Effective JVM flags supplied in evidence disable the AVX-512 Base64 path."
-	case build == "unfixed" && cpu == "present" && !mitigation(a.Flags):
-		f.Status, f.Reason = affected, "Known affected build with required CPU features. "+detail
+		f.Status, f.ReasonCode, f.Reason = unknown, "build_unknown", detail
+		if a.Patch == "fixed" && !f.PatchAttested {
+			f.ReasonCode, f.Reason = "patch_unverified", "Inventory declares a fix without a corroborating built-in build rule."
+		}
+	case f.MitigationAssessment == "effective_declared" && arch == "amd64":
+		f.Status, f.ReasonCode, f.Reason = mitigated, "mitigation_effective_declared", "Supplied effective JVM flags disable the AVX-512 Base64 path."
+	case f.MitigationAssessment == "observed_unverified":
+		f.Status, f.ReasonCode, f.Reason = potential, "mitigation_observed_unverified", "A mitigation flag was observed. Verify effective JVM flags after restart."
+	case build == "unfixed" && cpu == "present" && a.CPUContext != unknown:
+		f.Status, f.ReasonCode, f.Reason = affected, "affected_build_and_cpu", "Known affected build with required CPU features. "+detail
 	default:
-		f.Status, f.Reason = potential, detail
-		if mitigation(a.Flags) {
-			f.Reason += " A mitigation flag was observed. Verify effective JVM flags after restart."
-		} else if cpu == unknown || cpu == "mixed" {
-			f.Reason += " CPU eligibility is incomplete or varies across processors."
+		f.Status, f.ReasonCode, f.Reason = potential, "needs_evidence", detail
+		if a.Patch != "" && !f.PatchAttested {
+			f.ReasonCode, f.Reason = "patch_unverified", "Inventory patch claim could not be corroborated. "+detail
+		}
+		if cpu == unknown || cpu == "mixed" || a.CPUContext == unknown {
+			f.Reason += " CPU eligibility or execution context is incomplete."
 		}
 	}
 	return f
@@ -1059,6 +1179,70 @@ func launcherFlags(argv []byte) []string {
 	return relevantFlags(flags)
 }
 
+// Keep only JVM option variables and mitigation flags. Environment values
+// never enter a report, and starting options are never marked effective here.
+func linuxObservedFlags(argv, environment []byte, launcher bool) (flags, sources []string) {
+	relevant := map[string][]string{}
+	for _, entry := range bytes.Split(environment, []byte{0}) {
+		key, value, ok := bytes.Cut(entry, []byte{'='})
+		if !ok {
+			continue
+		}
+		name := string(key)
+		switch name {
+		case "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS":
+		case "JDK_JAVA_OPTIONS":
+			if !launcher {
+				continue
+			}
+		default:
+			continue
+		}
+		relevant[name] = relevantFlags(jvmOptionWords(string(value)))
+	}
+	if launcher {
+		relevant["cmdline"] = launcherFlags(argv)
+	}
+	// HotSpot reads _JAVA_OPTIONS after the launcher-provided VM arguments.
+	for _, source := range []string{"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "cmdline", "_JAVA_OPTIONS"} {
+		if len(relevant[source]) != 0 {
+			flags = append(flags, relevant[source]...)
+			sources = append(sources, source)
+		}
+	}
+	return flags, sources
+}
+
+func jvmOptionWords(value string) []string {
+	var words []string
+	var word strings.Builder
+	var quote rune
+	for _, c := range value {
+		switch {
+		case c == '\\':
+			// Launcher and VM option sources differ in escape handling.
+			return nil
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				word.WriteRune(c)
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case unicode.IsSpace(c):
+			words = append(words, word.String())
+			word.Reset()
+		default:
+			word.WriteRune(c)
+		}
+	}
+	if quote != 0 {
+		return nil
+	}
+	return append(words, word.String())
+}
+
 func processStart(proc string) string {
 	data, err := readBounded(filepath.Join(proc, "stat"), 16<<10)
 	if err != nil {
@@ -1117,15 +1301,19 @@ func linuxProcesses(pids []int, cpu string) ([]asset, []string) {
 		}
 		if root := jvmRoot(proc, lib); verified && root != "" {
 			a = releaseAsset(a.ID, root, "process", cpu)
+			a.CPUContext = "host"
 			a.JavaHome = strings.TrimPrefix(root, filepath.Join(proc, "root"))
 			a.Notes = append(a.Notes, "Mapped HotSpot library matches the device and inode of the JDK on disk.")
 		} else {
 			a.Notes = append(a.Notes, "Mapped JVM identity or JDK release metadata could not be verified.")
 		}
 		a.Container = containerHint(proc)
-		if argv, err := readBounded(filepath.Join(proc, "cmdline"), 2<<20); err == nil && named {
-			a.Flags = launcherFlags(argv)
+		argv, _ := readBounded(filepath.Join(proc, "cmdline"), 2<<20)
+		environment, envErr := readBounded(filepath.Join(proc, "environ"), 2<<20)
+		if envErr != nil {
+			a.Notes = append(a.Notes, "JVM startup environment could not be inspected.")
 		}
+		a.Flags, a.FlagSources = linuxObservedFlags(argv, environment, named)
 		afterExe, afterErr := os.Readlink(filepath.Join(proc, "exe"))
 		if start == "" || start != processStart(proc) || (exeErr == nil && (afterErr != nil || exe != afterExe)) {
 			a = asset{ID: a.ID, Kind: a.Kind, Notes: []string{"Process exited or changed identity during collection."}}

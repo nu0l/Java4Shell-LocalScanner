@@ -12,3 +12,13 @@ for os in linux windows darwin; do
     printf '%s\n' "$name"
   done
 done
+
+(
+  cd dist
+  files=(java4shell-{linux,darwin}-{amd64,arm64} java4shell-windows-{amd64,arm64}.exe)
+  if command -v sha256sum >/dev/null; then
+    sha256sum "${files[@]}"
+  else
+    shasum -a 256 "${files[@]}"
+  fi
+) > dist/SHA256SUMS

@@ -6,15 +6,24 @@ Read-only enterprise incident response for **CVE-2026-114938**. Assess JDK build
 
 ## Quick start
 
-The download includes six prebuilt programs in `dist/`. After extracting it, open a terminal in the extracted directory and run the program for your platform to scan the local machine.
+Prebuilt binaries are on [Releases](https://github.com/nu0l/Java4Shell-LocalScanner/releases), with `SHA256SUMS` checksums for all six platforms. Download and run the one for your platform.
 
 ```powershell
-.\dist\java4shell-windows-amd64.exe
+curl.exe -fLO https://github.com/nu0l/Java4Shell-LocalScanner/releases/latest/download/java4shell-windows-amd64.exe
+.\java4shell-windows-amd64.exe
 ```
 
 ```bash
-./dist/java4shell-linux-amd64
-./dist/java4shell-darwin-arm64
+curl -fLO https://github.com/nu0l/Java4Shell-LocalScanner/releases/latest/download/java4shell-linux-amd64
+chmod +x java4shell-linux-amd64
+./java4shell-linux-amd64
+```
+
+Verify the download:
+
+```bash
+curl -fLO https://github.com/nu0l/Java4Shell-LocalScanner/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
 ```
 
 The default terminal report gives a short Chinese verdict and lists items needing attention. Use `--details` for the full TXT report.
@@ -63,6 +72,10 @@ Java4Shell · CVE-2026-114938
 | `unknown` | Build identity or version evidence is insufficient to classify the asset. |
 
 The labels describe the evidence and execution context. Application exposure and exploitability require separate assessment.
+
+## Assessment scope
+
+Mounted JDKs default to an unknown CPU context. Linux observes mitigation options in JVM arguments and option variables. Effective mitigation requires separate evidence. Windows and macOS runtime library identity remains unverified. In pipelines, `--fail-on affected,potential` returns 3 after writing a matching report.
 
 - [Usage](docs/usage.en.md)
 - [Advisories, version rules and patch analysis](docs/research.md)
